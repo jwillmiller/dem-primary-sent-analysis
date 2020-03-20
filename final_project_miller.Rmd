@@ -1,0 +1,863 @@
+---
+title: "Predicting Democratic Primary Polling using Twitter Sentiment Analysis"
+output: 
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, results ='hide',include=TRUE)
+
+library(tidyverse)
+library(haven)
+library(readxl)
+library(lubridate)
+library(tidyr)
+library(tidytext)
+library(stringr)
+library(textdata)
+library(scales)
+library(zoo)
+library(ModelMetrics)
+library(caret)
+library(stargazer)
+library(leaflet)
+
+```
+
+```{r, include=FALSE}
+# load up the data
+# NB: this data has been manipulated in a Python Jupyter notebook before being loaded here (originally SQL table)
+
+# dependent variable(s)
+poll_data<-read_csv(file='C:/Users/willm/Documents/RStudioProjects/president_primary_polls.csv')
+
+# independent variables
+tweet_data<-read_csv(file='C:/Users/willm/Documents/RStudioProjects/tweetData.csv')
+```
+
+
+```{r}
+# addition of more independent variables
+
+## Create a new dataset with one line per word per request: crazy, I know
+tweet_expand<-tweet_data%>%
+  dplyr::select(X1,text)%>%
+  group_by(X1)%>%
+  unnest_tokens(input=text,output=word,token="words")
+
+## Drop known stop words
+tweet_expand<-tweet_expand%>%anti_join(stop_words,by="word")
+
+# sentiment analysis
+sentiment<-get_sentiments("afinn")
+
+## Merge with data frame of words and associated sentiment scores
+tweet_expand<-tweet_expand%>%left_join(sentiment,by="word")
+
+## Missing=0
+tweet_expand<-tweet_expand%>%
+  mutate(score=ifelse(is.na(value),0,value))
+
+## Sum score per post
+tweet_sum<-tweet_expand%>%group_by(X1)%>%
+  summarize(score=sum(score))
+
+# add it back in
+tweet_data<-tweet_data%>%left_join(tweet_sum,by="X1")
+```
+
+```{r}
+# clean location data
+# extract formatted state names from tweet location data
+
+tweet_data$location<-tolower(tweet_data$location)
+
+tweet_data$state[grepl(".*\\b(alabama|ab)\\b.*", tweet_data$location)]<-"Alabama"
+tweet_data$state[grepl(".*\\b(alaska|ak)\\b.*", tweet_data$location)]<-"Alaska"
+tweet_data$state[grepl(".*\\b(arizona|az)\\b.*", tweet_data$location)]<-"Arizona"
+tweet_data$state[grepl(".*\\b(arkansas|ar)\\b.*", tweet_data$location)]<-"Arkansas"
+tweet_data$state[grepl(".*\\b(california|ca)\\b.*", tweet_data$location)]<-"California"
+tweet_data$state[grepl(".*\\b(colorado|co)\\b.*", tweet_data$location)]<-"Colorado"
+tweet_data$state[grepl(".*\\b(connecticut|ct)\\b.*", tweet_data$location)]<-"Connecticut"
+tweet_data$state[grepl(".*\\b(delaware|de)\\b.*", tweet_data$location)]<-"Delaware"
+tweet_data$state[grepl(".*\\b(florida|fl)\\b.*", tweet_data$location)]<-"Florida"
+tweet_data$state[grepl(".*\\b(georgia|ga)\\b.*", tweet_data$location)]<-"Georgia"
+tweet_data$state[grepl(".*\\b(hawaii|hi)\\b.*", tweet_data$location)]<-"Hawaii"
+tweet_data$state[grepl(".*\\b(idaho|id)\\b.*", tweet_data$location)]<-"Idaho"
+tweet_data$state[grepl(".*\\b(illinois|il)\\b.*", tweet_data$location)]<-"Illinois"
+tweet_data$state[grepl(".*\\b(indiana|in)\\b.*", tweet_data$location)]<-"Indiana"
+tweet_data$state[grepl(".*\\b(iowa|ia)\\b.*", tweet_data$location)]<-"Iowa"
+tweet_data$state[grepl(".*\\b(kansas|ks)\\b.*", tweet_data$location)]<-"Kansas"
+tweet_data$state[grepl(".*\\b(kentucky|ky)\\b.*", tweet_data$location)]<-"Kentucky"
+tweet_data$state[grepl(".*\\b(louisiana|la)\\b.*", tweet_data$location)]<-"Louisiana"
+tweet_data$state[grepl(".*\\b(maine|me)\\b.*", tweet_data$location)]<-"Maine"
+tweet_data$state[grepl(".*\\b(maryland|md)\\b.*", tweet_data$location)]<-"Maryland"
+tweet_data$state[grepl(".*\\b(massachusetts|ma)\\b.*", tweet_data$location)]<-"Massachusetts"
+tweet_data$state[grepl(".*\\b(michigan|mi)\\b.*", tweet_data$location)]<-"Michigan"
+tweet_data$state[grepl(".*\\b(minnesota|mn)\\b.*", tweet_data$location)]<-"Minnesota"
+tweet_data$state[grepl(".*\\b(mississippi|ms)\\b.*", tweet_data$location)]<-"Mississippi"
+tweet_data$state[grepl(".*\\b(missouri|mo)\\b.*", tweet_data$location)]<-"Missouri"
+tweet_data$state[grepl(".*\\b(montana|mt)\\b.*", tweet_data$location)]<-"Montana"
+tweet_data$state[grepl(".*\\b(nebraska|ne)\\b.*", tweet_data$location)]<-"Nebraska"
+tweet_data$state[grepl(".*\\b(nevada|nv)\\b.*", tweet_data$location)]<-"Nevada"
+tweet_data$state[grepl(".*\\b(new hampshire|nh)\\b.*", tweet_data$location)]<-"New Hampshire"
+tweet_data$state[grepl(".*\\b(new jersey|nj)\\b.*", tweet_data$location)]<-"New Jersey"
+tweet_data$state[grepl(".*\\b(new mexico|nm)\\b.*", tweet_data$location)]<-"New Mexico"
+tweet_data$state[grepl(".*\\b(new york|ny)\\b.*", tweet_data$location)]<-"New York"
+tweet_data$state[grepl(".*\\b(north Carolina|nc)\\b.*", tweet_data$location)]<-"North Carolina"
+tweet_data$state[grepl(".*\\b(north dakota|nd)\\b.*", tweet_data$location)]<-"North Dakota"
+tweet_data$state[grepl(".*\\b(ohio|oh)\\b.*", tweet_data$location)]<-"Ohio"
+tweet_data$state[grepl(".*\\b(oklahoma|ok)\\b.*", tweet_data$location)]<-"Oklahoma"
+tweet_data$state[grepl(".*\\b(oregon|or)\\b.*", tweet_data$location)]<-"Oregon"
+tweet_data$state[grepl(".*\\b(pennsylvania|pa)\\b.*", tweet_data$location)]<-"Pennsylvania"
+tweet_data$state[grepl(".*\\b(rhode island|ri)\\b.*", tweet_data$location)]<-"Rhode Island"
+tweet_data$state[grepl(".*\\b(south carolina|sc)\\b.*", tweet_data$location)]<-"South Carolina"
+tweet_data$state[grepl(".*\\b(south dakota|sd)\\b.*", tweet_data$location)]<-"South Dakota"
+tweet_data$state[grepl(".*\\b(tennessee|tn)\\b.*", tweet_data$location)]<-"Tennessee"
+tweet_data$state[grepl(".*\\b(texas|tx)\\b.*", tweet_data$location)]<-"Texas"
+tweet_data$state[grepl(".*\\b(utah|ut)\\b.*", tweet_data$location)]<-"Utah"
+tweet_data$state[grepl(".*\\b(vermont|vt)\\b.*", tweet_data$location)]<-"Vermont"
+tweet_data$state[grepl(".*\\b(virginia|va)\\b.*", tweet_data$location)]<-"Virginia"
+tweet_data$state[grepl(".*\\b(washington|wa)\\b.*", tweet_data$location)]<-"Washington"
+tweet_data$state[grepl(".*\\b(west virginia|wv)\\b.*", tweet_data$location)]<-"West Virginia"
+tweet_data$state[grepl(".*\\b(wisconsin|wi)\\b.*", tweet_data$location)]<-"Wisconsin"
+tweet_data$state[grepl(".*\\b(wyoming|wy)\\b.*", tweet_data$location)]<-"Wyoming"
+tweet_data$state[grepl(".*\\b(district of columbia|dc)\\b.*", tweet_data$location)]<-"District of Columbia"
+tweet_data$state[grepl(".*\\b(puerto rico|pr)\\b.*", tweet_data$location)]<-"Puerto Rico"
+```
+
+
+```{r}
+# clean and merge to create full dataset
+
+# drop non-dems from the polling dataset
+dem_poll_data <- poll_data%>%filter(party == "DEM" & stage == "primary")
+
+# rename
+colnames(tweet_data)[colnames(tweet_data)=="day"] <- "start_date"
+
+# rename candidate names to match, then rename column to match
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Joseph R. Biden Jr.'] <- 'Joe Biden'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Bernard Sanders'] <- 'Bernie Sanders'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Kamala D. Harris'] <- 'Kamala Harris'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Cory A. Booker'] <- 'Cory Booker'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Julián Castro'] <- 'Julian Castro'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'John K. Delaney'] <- 'John Delaney'
+dem_poll_data$candidate_name[dem_poll_data$candidate_name == 'Michael F. Bennet'] <- 'Michael Bennet'
+
+# only include our relevant candidates
+dem_poll_data<-dem_poll_data%>%filter(candidate_name == "Bernie Sanders" | candidate_name == "Joe Biden" | candidate_name == "Andrew Yang" | candidate_name == "Marianne Williamson" | candidate_name == "Kamala Harris" | candidate_name == "Elizabeth Warren" | candidate_name == "Pete Buttigieg" | candidate_name == "Cory Booker" | candidate_name == "Julian Castro" | candidate_name == "Beto O'Rourke" | candidate_name == "Amy Klobuchar" | candidate_name == "Tulsi Gabbard" | candidate_name == "Tim Ryan" | candidate_name == "Bill de Blasio" | candidate_name == "John Delaney"  | candidate_name == "Wayne Messam" | candidate_name == "Michael Bennet" | candidate_name == "Steve Bullock" )
+
+colnames(dem_poll_data)[colnames(dem_poll_data)=="candidate_name"] <- "candidate"
+
+# drop unused columns
+drops<-c("question_id","poll_id", "cycle", "state", "pollster_id", "sponsor_ids", "sponsors", "display_name", "pollster_rating_id", "fte_grade", "sample_size", "population", "methodology", "sponsor_candidate", "internal", "partisan", "tracking", "nationwide_batch", "url")
+dem_poll_data<-dem_poll_data[ , !(names(dem_poll_data) %in% drops)]
+
+# append - keep non overlapping columns
+full_data<-bind_rows(tweet_data, dem_poll_data)
+
+# some date stuff
+
+# convert to datetime
+full_data<-full_data%>%mutate(date=as.Date(start_date, format="%m/%d/%y"))
+
+# restrict to dates we collected tweet data on
+full_data<-full_data%>%filter(date > as.Date("2019-09-12"))
+
+# sort by date
+full_data<-full_data[order(full_data$date),]
+
+# drop unused date columns
+drops<-c("datetime", "start_date", "end_date", "created_at")
+full_data<-full_data[ , !(names(full_data) %in% drops)]
+
+```
+
+### Will Miller
+
+## The Problem
+As the 2020 Democratic Primary Election approaches, both pundits and campaign teams use polling data to assess their relative position in the race and strategize on how to improve it. Candidates can leverage datasets that contain demographic information on voters to determine what those voters are looking for in a candidate in order to adjust their platform to draw the largest voter base. These datasets are often purchased from other organizations or collected through surveys. However, many voter opinions can be found on a platform that is free and where sentiments are expressed freely: Twitter. The purpose of this analysis is to see what sense can be made of the massive set of Tweets that mention Democratic Primary candidates using a Natural Language Processing (NLP) technique called sentiment analysis. By extracting information on how voters feel about different candidates from their activity on Twitter, the goal is to gain additional insights on voter sentiment, and more broadly to evaluate Twitter as a reliable source of information on voters. Ultimately, we want to decide if campaigns should use Twitter sentiment analysis data to measure the strength of their platform and to find room for improvement.
+
+## The Data
+
+### Polling data
+The polling data, the target variable in this analysis, comes from Nate Silver's website [FiveThirtyEight](https://data.fivethirtyeight.com/). This dataset contains polling data on all the Democratic Primary Candidates from a variety of pollsters. The variable I will try to predict will be an average of data from all the pollsters in this dataset.
+
+The graphic below shows polling percentages over time for all candidates.
+
+```{r}
+# plot polling data over time - we will just use the dependent variable dataset for simplicity
+
+# convert start date to datetime
+dem_poll_data<-dem_poll_data%>%mutate(start_date=as.Date(start_date, format="%m/%d/%y"))
+
+# restrict to relevant dates
+dem_poll_data<-dem_poll_data%>%filter(start_date > as.Date("2019-09-01"))
+
+# average all polling data for each candidate
+d_plot_data<-dem_poll_data%>%
+  group_by(candidate, start_date)%>%
+  summarize(poll_avg=mean(pct, na.rm=TRUE))
+
+# poll plot
+pp<-ggplot(d_plot_data, aes(x = start_date, y = poll_avg, color = candidate, group = candidate))
+pp<-pp+geom_point()
+pp<-pp+geom_line()
+pp<-pp+xlab("Date")+ylab("Polling percentage")
+pp<-pp+guides(fill=guide_legend(title="Candidate Name"))
+
+pp
+```
+
+
+### Tweet data
+The Tweet dataset, which I use to generate the independent variables, or features, was collected using the Twitter API. Unfortunately, Twitter's API limits the number of past Tweets that can be queried, so these Tweets were instead collected using the Streaming endpoint of the API. This endpoint allows the client to open up a "stream" with certain filtering parameters that returns Tweets that fit the filter as they are posted in real time. The filtering parameters that I used were the names of the top 18 Democratic Primary candidates (as of September 13, 2019). I used a Python script to collect data from the Streaming endpoint, which I hosted on my Raspberry Pi and had it run biweekly using a cron scheduler. cron is a Linux command line tool that allows a program to execute at set intervals.
+It is important to note that Twitter rate limits their API, meaning that not every Tweet that is posted comes through the endpoint. This rate is reportedly about 1% of all Tweets being produced at a given time ([source](https://stackoverflow.com/questions/34962677/twitter-streaming-api-limits)). As such, the data collected using this method is not necessarily indicative of what all Twitter users are saying at a given point in time. Here is a look at the dataset after it has been collected and put into a dataframe using Python, then loaded into R.
+
+```{r, results='asis',warning=FALSE}
+display_cols<-c("candidate", "text", "username", "followers", "date", "location")
+tweet_data_display<-tweet_data[display_cols]
+knitr::kable(tweet_data_display[1:5, ], caption="Data from Twitter Streaming API")
+```
+
+
+Who gets tweeted about the most?
+
+```{r}
+# who gets tweeted about the most overall?
+tot_count<-ggplot(tweet_data, aes(x=candidate, color=candidate))
+tot_count<-tot_count+geom_bar()
+tot_count<-tot_count+ylab("Total Tweet Count")+xlab("")
+tot_count<-tot_count+theme(legend.position="none")
+tot_count<-tot_count+theme(axis.text.x= element_text(size=10, angle=30))
+tot_count
+```
+
+Joe Biden is by far the most Tweeted-about candidate, followed by Elizabeth Warren and Bernie Sanders. Biden, Warren, and Sanders are also the top three in the aggregate polls.
+
+
+How has the frequency of Tweets changed over time for each of the candidates?
+
+```{r}
+# plot tweet frequency across all candidates over time
+tweet_data<-tweet_data%>%mutate(date=as.Date(start_date, format="%m/%d/%y"))
+freq<-ggplot(tweet_data,aes(x=date, color=candidate))
+freq<-freq+geom_bar()
+freq<-freq+facet_wrap(~candidate,ncol=3)
+freq<-freq+theme(legend.position="none")
+freq
+```
+
+For most candidates, the number of Tweets that mention them stays somewhat constant over time. One notable exception is Andrew Yang, who had a lot of people tweeting about him in September but has dropped off since. This could be related to Yang's announcement during the Third Democratic Debate on September 12 that he would randomly select 10 American families to be given $1000 per month for a year as a universal basic income pilot program ([source](https://www.politico.com/story/2019/09/12/andrew-yang-120000-giveaway-for-ubi-pilot-program-1493622)).
+
+
+Who tweets about each candidate?
+
+```{r, include=FALSE}
+top_tweeters<-tweet_data %>% group_by(candidate) %>% count(username) %>% top_n(1)
+colnames(top_tweeters)<-c("Candidate", "Account Name", "Number of Tweets")
+```
+
+```{r, results='asis'}
+knitr::kable(top_tweeters, caption="Top Tweeters by Candidate")
+```
+
+@thehill is the only verified account on this list. Many of the others have been deleted or are clearly bots due to their Tweet content and posting rate.
+
+
+How many people are seeing tweets about each candidate?
+
+```{r}
+follow_plot_data<-aggregate(tweet_data[, "followers"], list(tweet_data$candidate), mean)
+
+follow<-ggplot(follow_plot_data, aes(x=Group.1, y=followers, color=Group.1))
+follow<-follow+geom_bar(stat='identity')
+follow<-follow+xlab("Candidate")+ylab("Average Follower Count")
+follow<-follow+theme(legend.position="none")
+follow<-follow+scale_y_continuous(labels = comma)
+follow<-follow+theme(axis.text.x= element_text(size=10, angle=30))
+follow
+```
+
+This graphic is interesting but possibly misleading. Wayne Messam dominates this plot, but this could be due to the fact that not many accounts mention him besides large news outlets. As such, average follower count may not be the best way to measure how many people are exposed to content about a given candidate.
+
+
+Who is the most Tweeted-about candidate in each state?
+
+```{r, include=FALSE}
+# get the most tweeted about candidate by state
+top_by_state<-tweet_data %>% group_by(state) %>% count(candidate) %>% top_n(1)
+
+# convert list to df
+top_by_state<-as.data.frame(top_by_state)
+
+# load in state geojson data
+states <- geojsonio::geojson_read("C:/Users/willm/Documents/RStudioProjects/us-states.json", what = "sp")
+
+# rename columns for matching
+colnames(states@data)[2]<-"state"
+
+# append df to the spatial df
+states@data = data.frame(states@data, top_by_state[match(states@data$state, top_by_state$state),])
+
+# map plot
+pal <- colorFactor("Blues", domain = states$candidate)
+
+labels <- sprintf(
+  "<strong>%s</strong><br/>%s",
+  states$state, states$candidate
+) %>% lapply(htmltools::HTML)
+```
+
+```{r, results='asis'}
+m<-leaflet(states) %>%
+  setView(-96, 37.8, 4) %>%
+  addTiles(urlTemplate = 'http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png') %>%
+  addPolygons(
+    fillColor = ~pal(candidate),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto")) %>%
+  addLegend(pal = pal, values = ~candidate, opacity = 0.7, title = NULL,
+    position = "bottomright")
+
+m
+```
+
+
+This graphic was created by parsing the "location" field of the Tweet dataset to extract state names and abbreviations. Biden dominates this graphic; unsurprising, as he is the most Tweeted about candidate overall. Sanders and Warren are both the most Tweeted about candidate in their home states of Vermont and Massachusetts, respectively, but also carry some other states. Tulsi Gabbard only makes the graphic as she is the most Tweeted about candidate in her home state of Hawaii.
+
+
+### Sentiment Analysis
+In order to gain additional insights into the Twitter data, NLP techniques are used to turn the qualitative data from the "content" field of the Tweets into quantitative data that can be analyzed. Three different techniques were used to perform sentiment analysis on the Tweet data. Two of these were implemented during data pre-processing in Python. The first used a Python library called [TextBlob](https://textblob.readthedocs.io/en/dev/). TextBlob provides a pre-compiled model that automatically tokenizes text and outputs two float values: a polarity score between -1 and 1 where 1 is very positive and -1 is very negative, and a subjectivity score between 0 and 1 where 1 is very subjective and 0 is very objective. The advantage of TextBlob is that it is very easy to use; the downside is that it provides limited ability to optimize the model. For the second sentiment analysis technique, I used the Python package keras to create a deep learning model using a Convolution Neural Network (CNN) with the help of [this tutorial](https://realpython.com/python-keras-text-classification/). Each sentence was first turned into a vector representing the count of each word in the sentence in a process known as vectorization, converting the text data to an integer array. The CNN consisted of two layers and was trained on three labeled datasets of reviews from Yelp, Amazon, and IMDb. After some minor optimization, the model was run on the corpus of content from collected Tweets to predict their sentiment. For the CNN sentiment data, 1 indicates a positive sentiment while 0 indicates a negative sentiment. The final sentiment analysis technique was conducted in R using the tidytext package following the method that was covered in lecture. Each Tweet was broken down into words, each of which was given a sentiment score between -5 (negative) and 5 (positive) using the [AFINN Sentiment Lexicon](http://corpustext.com/reference/sentiment_afinn.html). The word scores were summed to generate a score for each Tweet.
+I averaged sentiment analysis data and the other independent features by candidate and by day in order to more closely align with the dependent variable in the polling dataset. Additionally, note that the sentiment analysis data has been scaled for many of the below graphics; this is done to make it easier to visually compare the sentiment data with polling data over time.
+
+```{r, include=FALSE}
+# bare bones dataset for analysis
+
+# drop unnecessary columns
+drops<-c("X1", "text", "username", "location", "pollster", "pollster_rating_name", "population_full", "office_type", "notes", "stage", "party", "answer")
+analysis_df<-full_data[ , !names(full_data) %in% drops]
+
+# average to make the data daily
+daily_data_df<-analysis_df%>%group_by(date, candidate)%>%
+  summarize(followers_avg=mean(followers, na.rm=TRUE),
+            subjectivity_avg=mean(subjectivity, na.rm=TRUE),
+            polarity_avg=mean(polarity, na.rm=TRUE),
+            cnn_sentiment_avg=mean(cnn_sentiment, na.rm=TRUE),
+            tidytext_sentiment_avg=mean(score, na.rm=TRUE),
+            polling_avg=mean(pct, na.rm=TRUE))
+
+# populate missing dates for continuity
+daily_data_df<-daily_data_df%>%
+  ungroup(date, candidate)%>%
+  mutate(date = as.Date(date))%>%
+  complete(date = seq.Date(min(date), max(date), by="day"), candidate)
+
+# fill na values down
+daily_data_df<-daily_data_df%>%
+  group_by(candidate)%>%
+  mutate_all(funs(na.locf(., na.rm = FALSE)))
+```
+
+
+Here, a comparison of sentiment techniques for a few selected candidates is performed. TextBlob and CNN values (between -1 and 1) have been scaled by 100; tidytext values (between -5 and 5) have been scaled by 20. The purpose of these graphics is to get a visual understanding of any correlation that might exist between the different techniques. Some dates to keep in mind: the three debates that happened during this period on September 12th, October 15th, and November 20th.
+
+```{r}
+# biden
+biden<-daily_data_df%>%filter(candidate=="Joe Biden")
+
+bp<-ggplot(biden, aes(x = date, y = subjectivity_avg*100, color = "Average TextBlob Subjectivity"))
+bp<-bp+geom_point()+geom_path()
+bp<-bp+geom_point(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))+geom_path(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))
+bp<-bp+geom_point(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))+geom_path(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))
+bp<-bp+geom_point(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))+geom_path(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))
+bp<-bp+xlab("Date")+ylab("Sentiment Analysis (scaled)")
+bp<-bp+ggtitle("Joe Biden")
+bp$labels$colour <- "Analysis Technique"
+
+bp
+```
+
+```{r}
+# warren
+warren<-daily_data_df%>%filter(candidate=="Elizabeth Warren")
+
+wp<-ggplot(warren, aes(x = date, y = subjectivity_avg*100, color = "Average TextBlob Subjectivity"))
+wp<-wp+geom_point()+geom_path()
+wp<-wp+geom_point(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))+geom_path(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))
+wp<-wp+geom_point(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))+geom_path(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))
+wp<-wp+geom_point(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))+geom_path(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))
+wp<-wp+xlab("Date")+ylab("Sentiment Analysis (scaled)")
+wp<-wp+ggtitle("Elizabeth Warren")
+wp$labels$colour <- "Analysis Technique"
+
+wp
+```
+
+```{r}
+# buttigieg
+buttigieg<-daily_data_df%>%filter(candidate=="Pete Buttigieg")
+
+bp<-ggplot(buttigieg, aes(x = date, y = subjectivity_avg*100, color = "Average TextBlob Subjectivity"))
+bp<-bp+geom_point()+geom_path()
+bp<-bp+geom_point(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))+geom_path(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))
+bp<-bp+geom_point(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))+geom_path(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))
+bp<-bp+geom_point(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))+geom_path(aes(y = tidytext_sentiment_avg*20, color = "Average tidytext Sentiment"))
+bp<-bp+xlab("Date")+ylab("Sentiment Analysis (scaled)")
+bp<-bp+ggtitle("Pete Buttigieg")
+bp$labels$colour <- "Analysis Technique"
+
+bp
+```
+
+It can be seen from these examples that the techniques do not track sentiment in the same way, but there are distinct parts of each plot where similarities are apparent.
+
+
+Sentiment comparison across all candidates.
+
+```{r}
+# TextBlob
+tb<-ggplot(daily_data_df, aes(x = date, y = polarity_avg, color = candidate))
+tb<-tb+geom_point(alpha=1)+geom_path()
+tb<-tb+facet_wrap(~candidate,ncol=3)
+tb<-tb+xlab("Day")+ylab("Average Tweet Polarity")
+tb<-tb+ggtitle("TextBlob Polarity")
+tb<-tb+theme(legend.position="none") #Suppress legend, not needed
+
+tb
+```
+
+```{r}
+# CNN
+cnn<-ggplot(daily_data_df, aes(x = date, y = cnn_sentiment_avg, color = candidate))
+cnn<-cnn+geom_point(alpha=1)+geom_path()
+cnn<-cnn+facet_wrap(~candidate,ncol=3)
+cnn<-cnn+xlab("Day")+ylab("Average Tweet Sentiment")
+cnn<-cnn+ggtitle("CNN Polarity")
+cnn<-cnn+theme(legend.position="none") #Suppress legend, not needed
+
+cnn
+```
+
+```{r}
+# tidytext
+tt<-ggplot(daily_data_df, aes(x = date, y = tidytext_sentiment_avg, color = candidate))
+tt<-tt+geom_point(alpha=1)+geom_path()
+tt<-tt+facet_wrap(~candidate,ncol=3)
+tt<-tt+xlab("Day")+ylab("Average Tweet Sentiment")
+tt<-tt+ggtitle("tidytext Sentiment")
+tt<-tt+theme(legend.position="none") #Suppress legend, not needed
+
+tt
+```
+
+
+How is Tweet sentiment distributed geographically for the most Tweeted-about candidate, Joe Biden?
+
+```{r}
+# sentiment by state
+biden_loc<-full_data%>%filter(candidate=="Joe Biden")
+sent_by_state<-biden_loc %>% group_by(state) %>% summarise(cnn_avg = mean(cnn_sentiment, na.rm=TRUE))
+
+# convert list to df
+sent_by_state<-as.data.frame(sent_by_state)
+
+# append df to the spatial df
+states@data = data.frame(states@data, sent_by_state[match(states@data$state, sent_by_state$state),])
+
+# map plot
+pal <- colorNumeric("Blues", domain = states$cnn_avg)
+
+labels <- sprintf(
+  "<strong>%s</strong><br/>%g Average Sentiment (CNN Model)",
+  states$state, states$cnn_avg
+) %>% lapply(htmltools::HTML)
+```
+
+```{r, results='asis'}
+m<-leaflet(states) %>%
+  setView(-96, 37.8, 4) %>%
+  addTiles() %>%
+  addPolygons(
+    fillColor = ~pal(cnn_avg),
+    weight = 2,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto")) %>%
+  addLegend(pal = pal, values = ~cnn_avg, opacity = 0.7, title = NULL,
+    position = "bottomright")
+
+m
+```
+
+Sentiments here are from the CNN method, and darker blue in the graphic corresponds to more positive sentiment. This graphic did not completely align with my expectations; I would have expected more positive sentiment in traditional Democratic strongholds like California and New York, but instead the most positive sentiment towards Biden is found in North Dakota. This graphic may be misleading because not as many people are Tweeting from states like North Dakota in comparison to California, so a few Tweets might dominate the sentiment analysis average in those states with less Tweets.
+
+
+### Predicting How Candidates Poll
+
+As a first step in predicting polling percentages, we can inspect sentiment analysis and polling side-by-side for a few candidates to get an understanding of whether this might be a good predictor. Again, the sentiment analysis data is scaled and the purpose of these graphics is to attempt to visualize possible correlations between these techniques and the target variable, polling percentage.
+
+```{r}
+# sanders
+sanders<-daily_data_df%>%filter(candidate=="Bernie Sanders")
+
+bp<-ggplot(sanders, aes(x = date, y = subjectivity_avg*100, color = "Average TextBlob Subjectivity"))
+bp<-bp+geom_point()+geom_path()
+bp<-bp+geom_point(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))+geom_path(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))
+bp<-bp+geom_point(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))+geom_path(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))
+bp<-bp+geom_point(aes(y = polling_avg, color = "Polling"))+geom_path(aes(y = polling_avg, color = "Polling"))
+bp<-bp+xlab("Date")+ylab("Sentiment Analysis (scaled by 100), Polling")
+bp<-bp+ggtitle("Bernie Sanders")
+bp$labels$colour <- "Variable"
+
+bp
+```
+
+```{r}
+# harris
+harris<-daily_data_df%>%filter(candidate=="Kamala Harris")
+
+bp<-ggplot(harris, aes(x = date, y = subjectivity_avg*100, color = "Average TextBlob Subjectivity"))
+bp<-bp+geom_point()+geom_path()
+bp<-bp+geom_point(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))+geom_path(aes(y = cnn_sentiment_avg*100, color = "Average Sentiment (CNN)"))
+bp<-bp+geom_point(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))+geom_path(aes(y = polarity_avg*100, color = "Average TextBlob Polarity"))
+bp<-bp+geom_point(aes(y = polling_avg, color = "Polling"))+geom_path(aes(y = polling_avg, color = "Polling"))
+bp<-bp+xlab("Date")+ylab("Sentiment Analysis (scaled by 100), Polling")
+bp<-bp+ggtitle("Kamala Harris")
+bp$labels$colour <- "Variable"
+
+bp
+```
+
+
+#### Conditional Means
+
+One possible way of predicting polling data is using conditional means. In this technique, the target variable is averaged at different quantiles of an input feature as a means of prediction. The first predictor I use is the average follower count for Tweets about each candidate by day. The polling percentage for each candidate averaged at quartiles of the average follower count is used as the predictor.
+
+```{r}
+# avg follower count quantiles
+biden_cond<-biden%>%mutate(fol_level=ntile(followers_avg,4))
+
+# predict
+
+# group by two variables and make predictions on avg
+biden_cond<-biden_cond%>%group_by(fol_level)%>%
+  mutate(pred_polling=mean(polling_avg))
+
+# plot
+## Showing the various levels
+cond_plot<-ggplot(data=biden_cond,aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point()+geom_path(aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))+geom_path(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))
+cond_plot<-cond_plot+scale_color_manual("Type",values=c("Actual"="blue",
+                                  "Predicted: Conditional Mean"="red"))
+
+cond_plot<-cond_plot+theme(legend.position="bottom")
+cond_plot<-cond_plot+xlab("Date")+ylab("Polling (%)")
+cond_plot<-cond_plot+ggtitle("Predicted Polling with Conditional Means at Levels of Average Follower Count\nJoe Biden")
+
+cond_plot
+```
+
+```{r}
+# avg follower count quantiles
+pete_cond<-buttigieg%>%mutate(fol_level=ntile(followers_avg,4))
+
+# summarize
+tb1<-pete_cond%>%
+  group_by(fol_level)%>%
+  summarize(mean_polling=mean(polling_avg,na.rm=TRUE))
+tb1
+
+# predict
+
+# group by two variables and make predictions on avg
+pete_cond<-pete_cond%>%group_by(fol_level)%>%
+  mutate(pred_polling=mean(polling_avg))
+
+# plot
+## Showing the various levels
+cond_plot<-ggplot(data=pete_cond,aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point()+geom_path(aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))+geom_path(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))
+cond_plot<-cond_plot+scale_color_manual("Type",values=c("Actual"="blue",
+                                  "Predicted: Conditional Mean"="red"))
+
+cond_plot<-cond_plot+theme(legend.position="bottom")
+cond_plot<-cond_plot+xlab("Date")+ylab("Polling (%)")
+cond_plot<-cond_plot+ggtitle("Predicted Polling with Conditional Means at Levels of Average Follower Count\nPete Buttigieg")
+
+cond_plot
+```
+
+For both Biden and Buttigieg, the conditional mean on follower count tracks the basic trends in polling, but fails to capture large swings in the polls.
+
+
+For my second predictor, I take the average polling percentage at quartiles of a few different sentiment analysis techniques.
+
+
+Grouping by CNN Polarity
+
+```{r}
+# avg quantiles
+sanders_cond<-sanders%>%mutate(cnn_sent_level=ntile(cnn_sentiment_avg,4))
+
+# predict
+
+# group by two variables and make predictions on avg
+sanders_cond<-sanders_cond%>%group_by(cnn_sent_level)%>%
+  mutate(pred_polling=mean(polling_avg))
+
+# plot
+## Showing the various levels
+cond_plot<-ggplot(data=sanders_cond,aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point()+geom_path(aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))+geom_path(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))
+cond_plot<-cond_plot+scale_color_manual("Type",values=c("Actual"="blue",
+                                  "Predicted: Conditional Mean"="red"))
+
+cond_plot<-cond_plot+theme(legend.position="bottom")
+cond_plot<-cond_plot+xlab("Date")+ylab("Polling (%)")
+cond_plot<-cond_plot+ggtitle("Predicted Polling with Conditional Means at Levels of Average Polarity (CNN)\nBernie Sanders")
+
+cond_plot
+```
+
+
+Grouping by TextBlob Subjectivity and Polarity
+
+```{r}
+# avg quantiles
+warren_cond<-warren%>%mutate(tb_subj_level=ntile(subjectivity_avg,4))
+warren_cond<-warren_cond%>%mutate(tb_pol_level=ntile(polarity_avg,4))
+
+# predict
+
+# group by two variables and make predictions on avg
+warren_cond<-warren_cond%>%group_by(tb_subj_level, tb_pol_level)%>%
+  mutate(pred_polling=mean(polling_avg))
+
+# plot
+## Showing the various levels
+cond_plot<-ggplot(data=warren_cond,aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point()+geom_path(aes(x=date,y=polling_avg,color="Actual",group="Actual"))
+cond_plot<-cond_plot+geom_point(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))+geom_path(aes(y=pred_polling,
+                      color="Predicted: Conditional Mean",
+                      group="Predicted: Conditional Mean"))
+cond_plot<-cond_plot+scale_color_manual("Type",values=c("Actual"="blue",
+                                  "Predicted: Conditional Mean"="red"))
+
+cond_plot<-cond_plot+theme(legend.position="bottom")
+cond_plot<-cond_plot+xlab("Date")+ylab("Polling (%)")
+cond_plot<-cond_plot+ggtitle("Predicted Polling with Conditional Means at Levels of Subjectivity and Polarity\n(TextBlob) Elizabeth Warren")
+
+cond_plot
+```
+
+The CNN Sentiment does not appear to track Sanders' polling very well. The TextBlob sentiment analysis, on the other hand, appears to track Elizabeth Warren's polling relatively closely, but again fails to track large changes.
+
+
+#### Regression
+
+The second technique that I use to predict polling data is a linear regression model. The model is constructed using the four sentiment analysis features plus the follower count. It is important to note that in order to get real data (non-NA) for each day, the data was filled down. That is, if there was no data for a given feature on a day, that data point was populated using the previous real value for that feature.
+First, a model will be created just to predict polling for the top candidate in the polls, Joe Biden.
+
+The first step is to visualize the distribution of the target variable and the features to see if they need to be transformed.
+
+```{r, out.width="30%", fig.show='hold'}
+var_inspect<-ggplot(biden,aes(x=polling_avg))
+var_inspect<-var_inspect+geom_density()
+var_inspect<-var_inspect+ggtitle("Density Plot of Joe Biden's Polling Average")
+var_inspect<-var_inspect+xlab("Polling Average")
+var_inspect
+
+var_inspect<-ggplot(biden,aes(x=followers_avg))
+var_inspect<-var_inspect+geom_density()
+var_inspect<-var_inspect+ggtitle("Density Plot of Average Followers for Tweets About Joe Biden")
+var_inspect<-var_inspect+xlab("Average Follower Count")
+var_inspect
+
+var_inspect<-ggplot(biden,aes(x=cnn_sentiment_avg))
+var_inspect<-var_inspect+geom_density()
+var_inspect<-var_inspect+ggtitle("Density Plot of Average Polarity (CNN) in Tweets About Joe Biden")
+var_inspect<-var_inspect+xlab("Average Subjectivity")
+var_inspect
+```
+
+From these plots, I determined that the target variable is approximately normally distributed while the features, with the exception of CNN polarity, have exponential distributions. As such, I log transform those features that are exponentially distributed.
+
+I use both a simple linear model and a linear stepwise regression to attempt to model polling data. The simple linear model is essentially a conditional mean at every level of the input features, creating a continuous function that predicts the target variable. The linear stepwise regression is the same principle, except the computer is allowed to choose the combination of input features that yields the lowest error.
+
+```{r}
+# need to drop candidate name from the df because it is a factor
+drops <- c("candidate")
+biden_model<-biden[ , !(names(biden) %in% drops)]
+
+fitControl<-trainControl(method="boot",
+                         p=.2)
+
+fit1<-train(polling_avg~log(followers_avg+1)+
+                 log(subjectivity_avg+1)+
+                 log(polarity_avg+1)+
+                 cnn_sentiment_avg,
+            method="lm",
+            data=biden_model,
+            trControl=fitControl)
+
+# stargazer will only output this lm model
+lm1 <- lm(polling_avg~log(followers_avg+1)+
+                 log(subjectivity_avg+1)+
+                 log(polarity_avg+1)+
+                 cnn_sentiment_avg, 
+          data=biden_model)
+#fit1$call <- lm1$call
+```
+
+
+```{r}
+fit2<-train(polling_avg~.,
+            data=biden_model,
+            method="glmStepAIC",
+            trControl=fitControl)
+
+# for stargazer op
+lm2 <- glm(polling_avg ~ ., data=biden_model, family="gaussian")
+fit2$finalModel$call <- lm2$call
+```
+
+```{r, results='hold', results='asis', echo=FALSE, warning=FALSE}
+stargazer(lm1, type='html', title="Biden: Coefficients of Simple Linear Regression Model")
+
+stargazer(fit2$finalModel, type='html', title="Biden: Coefficients of Final Model from Stepwise Linear Regression")
+```
+
+The summaries from the two models can be found above. For the simple linear regression, the average number of followers for Tweets about the candidate is the most meaningful covariate. For the stepwise regression, none of the sentiment analysis covariates were relevant for polling. However, this changes over different iterations of the sentiment analysis and modeling; on average, the TextBlob subjectivity measure is the most relevant covariate. Next, the two models are crossvalidated and the results are visualized.
+
+```{r}
+rmse_data<-tbl_df(data.frame(fit1$resample$RMSE,fit2$resample$RMSE))
+names(rmse_data)<-c("fit1","fit2")
+
+gg<-ggplot(rmse_data,aes(x=fit1))
+gg<-gg+geom_density(fill="orange",alpha=.2)
+gg<-gg+geom_density(aes(x=fit2),fill="blue",alpha=.2)
+gg<-gg+theme(legend.position="right")
+gg<-gg+xlab("RMSE (polling percentage points)")+ylab("Density")
+gg<-gg+ggtitle("Cross Validation Results from Simple (Orange) and\nStepwise (Blue) Linear Regression Models\nJoe Biden Polling")
+
+gg
+```
+
+Crossvalidation of the models consists of randomly partitioning the data into training and testing portions, then computing the RMSE for each iteration. The RMSE (root mean squared error) is how much error we can expect from our model; in this case the units are polling percentage points. The resulting RMSE distributions are plotted above. The stepwise regression model yields a slightly lower RMSE on average, but has more variation. The linear regression model has a more concentrated distribution of RMSE, with an average of slightly more than 5 percentage points.
+
+
+Finally, I create a model using the full dataset with all the candidates using the same technique as for the Biden predictive model. In these models, the candidate name is included as a factor covariate.
+
+```{r}
+# there are some na values at the beginning that were unable to be filled. drop these for the regression
+daily_data_df_model<-daily_data_df[complete.cases(daily_data_df), ]
+daily_data_df_model<-daily_data_df_model%>%ungroup(candidate)%>%mutate(candidate = as.factor(candidate))
+
+fitControl<-trainControl(method="boot",
+                         p=.2)
+
+fit1<-train(polling_avg~log(followers_avg+1)+
+                 log(subjectivity_avg+1)+
+                 log(polarity_avg+1)+
+                 cnn_sentiment_avg+
+                 candidate,
+            method="lm",
+            data=daily_data_df_model,
+            trControl=fitControl)
+
+# stargazer will only output this lm model
+lm1 <- lm(polling_avg~log(followers_avg+1)+
+                 log(subjectivity_avg+1)+
+                 log(polarity_avg+1)+
+                 cnn_sentiment_avg+
+                 candidate, 
+          data=daily_data_df_model)
+#fit1$call <- lm1$call
+```
+
+```{r}
+fit2<-train(polling_avg~.,
+            data=daily_data_df_model,
+            method="glmStepAIC",
+            trControl=fitControl)
+
+# for stargazer op
+lm2 <- glm(polling_avg ~ ., data=daily_data_df_model, family="gaussian")
+fit2$finalModel$call <- lm2$call
+```
+
+```{r, results='hold', results='asis', echo=FALSE, warning=FALSE}
+stargazer(lm1, type='html', title="All candidates - Coefficients of Simple Linear Regression Model")
+
+stargazer(fit2$finalModel, type='html', title="All candidates - Coefficients of Final Model from Stepwise Linear Regression")
+```
+
+When all the candidates are included in the regression, the sentiment analysis techniques become less relevant as predictors, as indicated by the final output of the stepwise regression model. The simple linear regression output tells us that the TextBlob subjectivity was the most meaningful predictor out of the sentiment analysis features.
+
+```{r}
+rmse_data<-tbl_df(data.frame(fit1$resample$RMSE,fit2$resample$RMSE))
+names(rmse_data)<-c("fit1","fit2")
+
+gg<-ggplot(rmse_data,aes(x=fit1))
+gg<-gg+geom_density(fill="orange",alpha=.2)
+gg<-gg+geom_density(aes(x=fit2),fill="blue",alpha=.2)
+gg<-gg+theme(legend.position="right")
+gg<-gg+xlab("RMSE (polling percentage points)")+ylab("Density")
+gg<-gg+ggtitle("Cross Validation Results from Simple (Orange) and\nStepwise (Blue) Linear Regression Models\nAll candidates polling")
+
+gg
+```
+
+From these RMSE distributions it can be seen that both of these models outperform the model created just for Joe Biden in terms of predicting polling percentages. There is not much difference between the simple linear regression and the stepwise regression for this data.
+
+
+### Recommendations
+
+Based on this analysis, we can use Twitter data and sentiment analysis to train a model to predict where Joe Biden is polling with an average error of about five percentage points. We can also predict where candidates are polling in general with an average error of a little more than two percentage points. It is clear that sentiment towards or surrounding a candidate on Twitter is at least somewhat indicative of how that candidate is performing in the polls. There are two recommendations from this analysis, one from each of the regressions performed. My first recommendation is that presidential candidate campaigns track sentiment data from Twitter using the TextBlob sentiment analysis method, which was shown to have the most variance in predicting polling. The next step for a campaign team would be to test the effects of different social media strategies on average Tweet sentiment. For example, how is the number of impressions (a standard social media outreach measure) related to average sentiment by day? My second recommendation is that Twitter and other social media activity be taken into account by websites like FiveThirtyEight when tracking where all candidates are polling. However, it is important to note that I do not necessarily think that Twitter sentiment is an accurate predictor of who will win the Democratic Primary election. Twitter consists of a user group that disproportionately represents younger ages and urban areas. It remains to be seen whether everyone who gets on Twitter to support their favorite candidate will show up to the polls to voice that support in the form of a vote. 
+
+
